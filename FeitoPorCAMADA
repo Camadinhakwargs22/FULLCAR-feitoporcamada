@@ -1,0 +1,137 @@
+-- BOOST + LIMITER + FREIO (W para acelerar, S para frear)
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+
+-- Conversão 450 mph → studs/s
+local MAX_MPH     = 550
+local MPH_TO_STUD = 1.5 / 0.745
+local MAX_SPEED   = MAX_MPH * MPH_TO_STUD     -- ≈ 719 studs/s
+
+-- Forças
+local ASSIST_FORCE = 30000   -- empurrão na aceleração
+local BRAKE_FORCE  = 40000   -- força de freio (ajuste pra ficar mais/menos brusco)
+local CLAMP_P      = 5000    -- firmeza do limiter
+
+local player  = Players.LocalPlayer
+local seat
+local isAccel  = false
+local isBraking = false
+
+-- Criando objetos (sem parentar ainda)
+local assist = Instance.new("BodyForce")
+assist.Name  = "SpeedAssist"
+assist.Force = Vector3.new(0,0,0)
+
+local limiter = Instance.new("BodyVelocity")
+limiter.Name     = "SpeedLimiter"
+limiter.MaxForce = Vector3.new(math.huge, 0, math.huge)
+limiter.P        = CLAMP_P
+limiter.Velocity = Vector3.new(0,0,0)
+
+local brake = Instance.new("BodyForce")
+brake.Name  = "SpeedBrake"
+brake.Force = Vector3.new(0,0,0)
+
+-- Atualiza 'seat' ao sentar/desentar
+player.CharacterAdded:Connect(function(char)
+	local humanoid = char:WaitForChild("Humanoid")
+	humanoid.Seated:Connect(function(active, s)
+		if active and s:IsA("VehicleSeat") then
+			seat = s
+		else
+			seat = nil
+			assist.Parent = nil
+			limiter.Parent = nil
+			brake.Parent = nil
+		end
+	end)
+end)
+-- Se já estiver sentado antes de colar
+if player.Character and player.Character:FindFirstChild("Humanoid").SeatPart then
+	local s = player.Character.Humanoid.SeatPart
+	if s:IsA("VehicleSeat") then
+		seat = s
+	end
+end
+
+-- Detecta W e S pressionados/soltos
+UIS.InputBegan:Connect(function(inp, gp)
+	if gp then return end
+	if inp.KeyCode == Enum.KeyCode.W then
+		isAccel = true
+	elseif inp.KeyCode == Enum.KeyCode.S then
+		isBraking = true
+	end
+end)
+UIS.InputEnded:Connect(function(inp)
+	if inp.KeyCode == Enum.KeyCode.W then
+		isAccel = false
+	end
+	if inp.KeyCode == Enum.KeyCode.S then
+		isBraking = false
+	end
+end)
+
+-- Loop principal
+RunService.RenderStepped:Connect(function()
+	if not seat then return end
+
+	local vel3d   = seat.AssemblyLinearVelocity
+	local flatVel = Vector3.new(vel3d.X, 0, vel3d.Z)
+	local speed   = flatVel.Magnitude
+
+	-- FREIO (prioritário)
+	if isBraking then
+		-- remove assist e limiter
+		assist.Parent = nil
+		limiter.Parent = nil
+
+		-- aplica força de freio oposta ao vetor de movimento
+		if speed > 1 then
+			if not brake.Parent then
+				brake.Parent = seat
+			end
+			local dir = flatVel.Unit
+			brake.Force = -dir * BRAKE_FORCE
+		else
+			-- parado ou quase, remove
+			if brake.Parent then
+				brake.Parent = nil
+			end
+		end
+
+		return
+	else
+		-- sem frear, garante remoção
+		if brake.Parent then
+			brake.Parent = nil
+		end
+	end
+
+	-- ACELERAÇÃO (W)
+	if isAccel then
+		-- assist
+		if speed < MAX_SPEED then
+			if not assist.Parent then assist.Parent = seat end
+			local dir = Vector3.new(seat.CFrame.LookVector.X, 0, seat.CFrame.LookVector.Z).Unit
+			assist.Force = dir * ASSIST_FORCE
+		else
+			if assist.Parent then assist.Parent = nil end
+		end
+
+		-- clamp
+		if speed > MAX_SPEED then
+			if not limiter.Parent then limiter.Parent = seat end
+			limiter.Velocity = flatVel.Unit * MAX_SPEED
+		else
+			if limiter.Parent then limiter.Parent = nil end
+		end
+
+	else
+		-- nem acelerando nem freando: remove assist e limiter
+		if assist.Parent then assist.Parent = nil end
+		if limiter.Parent then limiter.Parent = nil end
+	end
+end)
