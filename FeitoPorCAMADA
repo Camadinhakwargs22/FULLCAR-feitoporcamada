@@ -1,40 +1,84 @@
--- BOOST + LIMITER + FREIO (W para acelerar, S para frear)
+-- UI Library
+local Lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/7yhx/kwargs_Ui_Library/main/source.lua"))()
+
+local UI = Lib:Create{
+   Theme = "Dark",
+   Size = UDim2.new(0, 555, 0, 400)
+}
+
+local Main = UI:Tab{
+   Name = "Car Control"
+}
+
+local Divider = Main:Divider{
+   Name = "Speed Settings"
+}
+
+-- VARIÁVEIS DE CONFIGURAÇÃO
+local MPH_TO_STUD = 1.5 / 0.745
+local MAX_MPH = 550 -- valor inicial
+local MAX_SPEED = MAX_MPH * MPH_TO_STUD
+
+-- Função para alterar velocidade
+local function SetSpeedMPH(mph)
+    MAX_MPH = mph
+    MAX_SPEED = MAX_MPH * MPH_TO_STUD
+    print("Velocidade máxima definida para:", mph, "MPH")
+end
+
+-- Criar botões de velocidade (100–700 MPH)
+local speedButtons = {}
+for mph = 100, 700, 100 do
+    local btn = Divider:Button{
+        Name = mph .. " MPH",
+        Callback = function()
+            SetSpeedMPH(mph)
+        end
+    }
+    table.insert(speedButtons, btn)
+end
+
+-- Botão para deletar os botões
+Divider:Button{
+    Name = "Delete Buttons",
+    Callback = function()
+        for _, btn in ipairs(speedButtons) do
+            btn:Destroy()
+        end
+        speedButtons = {}
+    end
+}
+
+----------------------------------------------------------------------------------
+-- SISTEMA DE CARRO INTEGRADO COM A VELOCIDADE DA UI
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
 
--- Conversão 450 mph → studs/s
-local MAX_MPH     = 550
-local MPH_TO_STUD = 1.5 / 0.745
-local MAX_SPEED   = MAX_MPH * MPH_TO_STUD     -- ≈ 719 studs/s
+-- Forças fixas
+local ASSIST_FORCE = 30000
+local BRAKE_FORCE  = 40000
+local CLAMP_P      = 5000
 
--- Forças
-local ASSIST_FORCE = 30000   -- empurrão na aceleração
-local BRAKE_FORCE  = 40000   -- força de freio (ajuste pra ficar mais/menos brusco)
-local CLAMP_P      = 5000    -- firmeza do limiter
-
-local player  = Players.LocalPlayer
+local player    = Players.LocalPlayer
 local seat
-local isAccel  = false
+local isAccel   = false
 local isBraking = false
 
--- Criando objetos (sem parentar ainda)
+-- Objetos físicos
 local assist = Instance.new("BodyForce")
 assist.Name  = "SpeedAssist"
-assist.Force = Vector3.new(0,0,0)
 
 local limiter = Instance.new("BodyVelocity")
 limiter.Name     = "SpeedLimiter"
 limiter.MaxForce = Vector3.new(math.huge, 0, math.huge)
 limiter.P        = CLAMP_P
-limiter.Velocity = Vector3.new(0,0,0)
 
 local brake = Instance.new("BodyForce")
-brake.Name  = "SpeedBrake"
-brake.Force = Vector3.new(0,0,0)
+brake.Name = "SpeedBrake"
 
--- Atualiza 'seat' ao sentar/desentar
+-- Detecção de assento
 player.CharacterAdded:Connect(function(char)
 	local humanoid = char:WaitForChild("Humanoid")
 	humanoid.Seated:Connect(function(active, s)
@@ -42,13 +86,13 @@ player.CharacterAdded:Connect(function(char)
 			seat = s
 		else
 			seat = nil
-			assist.Parent = nil
+			assist.Parent  = nil
 			limiter.Parent = nil
-			brake.Parent = nil
+			brake.Parent   = nil
 		end
 	end)
 end)
--- Se já estiver sentado antes de colar
+
 if player.Character and player.Character:FindFirstChild("Humanoid").SeatPart then
 	local s = player.Character.Humanoid.SeatPart
 	if s:IsA("VehicleSeat") then
@@ -56,82 +100,58 @@ if player.Character and player.Character:FindFirstChild("Humanoid").SeatPart the
 	end
 end
 
--- Detecta W e S pressionados/soltos
-UIS.InputBegan:Connect(function(inp, gp)
+-- Controles
+UIS.InputBegan:Connect(function(input, gp)
 	if gp then return end
-	if inp.KeyCode == Enum.KeyCode.W then
-		isAccel = true
-	elseif inp.KeyCode == Enum.KeyCode.S then
-		isBraking = true
-	end
-end)
-UIS.InputEnded:Connect(function(inp)
-	if inp.KeyCode == Enum.KeyCode.W then
-		isAccel = false
-	end
-	if inp.KeyCode == Enum.KeyCode.S then
-		isBraking = false
-	end
+	if input.KeyCode == Enum.KeyCode.W then isAccel = true end
+	if input.KeyCode == Enum.KeyCode.S then isBraking = true end
 end)
 
--- Loop principal
+UIS.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.W then isAccel = false end
+	if input.KeyCode == Enum.KeyCode.S then isBraking = false end
+end)
+
+-- Loop de controle
 RunService.RenderStepped:Connect(function()
 	if not seat then return end
 
-	local vel3d   = seat.AssemblyLinearVelocity
+	local vel3d = seat.AssemblyLinearVelocity
 	local flatVel = Vector3.new(vel3d.X, 0, vel3d.Z)
-	local speed   = flatVel.Magnitude
+	local speed = flatVel.Magnitude
 
-	-- FREIO (prioritário)
 	if isBraking then
-		-- remove assist e limiter
 		assist.Parent = nil
 		limiter.Parent = nil
 
-		-- aplica força de freio oposta ao vetor de movimento
 		if speed > 1 then
-			if not brake.Parent then
-				brake.Parent = seat
-			end
-			local dir = flatVel.Unit
-			brake.Force = -dir * BRAKE_FORCE
+			if not brake.Parent then brake.Parent = seat end
+			brake.Force = -flatVel.Unit * BRAKE_FORCE
 		else
-			-- parado ou quase, remove
-			if brake.Parent then
-				brake.Parent = nil
-			end
-		end
-
-		return
-	else
-		-- sem frear, garante remoção
-		if brake.Parent then
 			brake.Parent = nil
 		end
+		return
+	else
+		brake.Parent = nil
 	end
 
-	-- ACELERAÇÃO (W)
 	if isAccel then
-		-- assist
 		if speed < MAX_SPEED then
 			if not assist.Parent then assist.Parent = seat end
 			local dir = Vector3.new(seat.CFrame.LookVector.X, 0, seat.CFrame.LookVector.Z).Unit
 			assist.Force = dir * ASSIST_FORCE
 		else
-			if assist.Parent then assist.Parent = nil end
+			assist.Parent = nil
 		end
 
-		-- clamp
 		if speed > MAX_SPEED then
 			if not limiter.Parent then limiter.Parent = seat end
 			limiter.Velocity = flatVel.Unit * MAX_SPEED
 		else
-			if limiter.Parent then limiter.Parent = nil end
+			limiter.Parent = nil
 		end
-
 	else
-		-- nem acelerando nem freando: remove assist e limiter
-		if assist.Parent then assist.Parent = nil end
-		if limiter.Parent then limiter.Parent = nil end
+		assist.Parent = nil
+		limiter.Parent = nil
 	end
 end)
